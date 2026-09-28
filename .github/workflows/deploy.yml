@@ -1,5 +1,5 @@
-# Version: v1.1.1
-name: Build and Deploy Next.js Server to Hostinger (v1.1.1)
+# Version: v1.1.2
+name: Build and Deploy Next.js Server to Hostinger (v1.1.2)
 
 on:
   push:
@@ -43,27 +43,30 @@ jobs:
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          # Nettoie les retours chariots Windows (\r) et garantit le saut de ligne final (\n)
           printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          # Vérifie immédiatement que libcrypto accepte le format de la clé privée
           ssh-keygen -y -f ~/.ssh/id_deploy > /dev/null
-          # Enregistre l'empreinte du serveur Hostinger
           ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
 
-      - name: 7. Synchronisation Rsync et redémarrage du serveur Node.js
+      - name: 7. Synchronisation Rsync et normalisation des permissions LiteSpeed
         env:
           SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
           SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
           SSH_USER: ${{ secrets.HOSTINGER_SSH_USER }}
           APP_PATH: ${{ secrets.HOSTINGER_APP_PATH }}
         run: |
-          rsync -avzr --delete --exclude='.env' \
+          # Exclut .htaccess, .env et tmp/ de la suppression
+          # Force les permissions 755 (dossiers) et 644 (fichiers) exigées par LiteSpeed
+          rsync -avzr --delete \
+            --chmod=Du=rwx,Dg=rx,Do=rx,Fu=rw,Fg=r,Fo=r \
+            --exclude='.env' \
+            --exclude='.htaccess' \
+            --exclude='tmp/' \
             -e "ssh -i ~/.ssh/id_deploy -p $SSH_PORT -o StrictHostKeyChecking=yes" \
-            .next/standalone/ "$SSH_USER@$SSH_HOST:$APP_PATH"
+            .next/standalone/ "${SSH_USER}@${SSH_HOST}:${APP_PATH%/}/"
 
           ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
-            "mkdir -p $APP_PATH/tmp && touch $APP_PATH/tmp/restart.txt"
+            "mkdir -p ${APP_PATH%/}/tmp && touch ${APP_PATH%/}/tmp/restart.txt"
 
       - name: 8. Nettoyage de la clé SSH
         if: always()
