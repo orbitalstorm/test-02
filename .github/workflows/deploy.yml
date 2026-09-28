@@ -1,10 +1,11 @@
-# Version: v1.0.0
-name: Build and Deploy Next.js Server to Hostinger (v1.0.0)
+# Version: v1.1.1
+name: Build and Deploy Next.js Server to Hostinger (v1.1.1)
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
@@ -27,8 +28,6 @@ jobs:
         run: npm run build
         env:
           NODE_ENV: production
-          # Ajoutez ici vos variables d'environnement publiques (NEXT_PUBLIC_*) si nécessaire :
-          # NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
 
       - name: 5. Assemblage du bundle Standalone
         run: |
@@ -36,25 +35,36 @@ jobs:
           mkdir -p .next/standalone/.next
           cp -r .next/static .next/standalone/.next/static
 
-      - name: 6. Déploiement vers Hostinger via SSH (Rsync)
-        uses: burnett01/rsync-deployments@7.0.1
-        with:
-          switches: -avzr --delete --exclude='.env'
-          path: .next/standalone/
-          remote_path: ${{ secrets.HOSTINGER_APP_PATH }}
-          remote_host: ${{ secrets.HOSTINGER_SSH_HOST }}
-          remote_port: ${{ secrets.HOSTINGER_SSH_PORT }}
-          remote_user: ${{ secrets.HOSTINGER_SSH_USER }}
-          remote_key: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+      - name: 6. Configuration et validation de la clé SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          # Nettoie les retours chariots Windows (\r) et garantit le saut de ligne final (\n)
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Vérifie immédiatement que libcrypto accepte le format de la clé privée
+          ssh-keygen -y -f ~/.ssh/id_deploy > /dev/null
+          # Enregistre l'empreinte du serveur Hostinger
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
 
-      - name: 7. Redémarrage du serveur Node.js (Phusion Passenger / LiteSpeed)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.HOSTINGER_SSH_HOST }}
-          username: ${{ secrets.HOSTINGER_SSH_USER }}
-          key: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
-          port: ${{ secrets.HOSTINGER_SSH_PORT }}
-          script: |
-            cd ${{ secrets.HOSTINGER_APP_PATH }}
-            mkdir -p tmp
-            touch tmp/restart.txt
+      - name: 7. Synchronisation Rsync et redémarrage du serveur Node.js
+        env:
+          SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+          SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
+          SSH_USER: ${{ secrets.HOSTINGER_SSH_USER }}
+          APP_PATH: ${{ secrets.HOSTINGER_APP_PATH }}
+        run: |
+          rsync -avzr --delete --exclude='.env' \
+            -e "ssh -i ~/.ssh/id_deploy -p $SSH_PORT -o StrictHostKeyChecking=yes" \
+            .next/standalone/ "$SSH_USER@$SSH_HOST:$APP_PATH"
+
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
+            "mkdir -p $APP_PATH/tmp && touch $APP_PATH/tmp/restart.txt"
+
+      - name: 8. Nettoyage de la clé SSH
+        if: always()
+        run: rm -f ~/.ssh/id_deploy
