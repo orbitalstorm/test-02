@@ -1,0 +1,60 @@
+# Version: v1.0.0
+name: Build and Deploy Next.js Server to Hostinger (v1.0.0)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Récupération du code source
+        uses: actions/checkout@v4
+
+      - name: 2. Configuration de Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 3. Installation stricte des dépendances
+        run: npm ci
+
+      - name: 4. Compilation de l'application Next.js
+        run: npm run build
+        env:
+          NODE_ENV: production
+          # Ajoutez ici vos variables d'environnement publiques (NEXT_PUBLIC_*) si nécessaire :
+          # NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+
+      - name: 5. Assemblage du bundle Standalone
+        run: |
+          cp -r public .next/standalone/public || true
+          mkdir -p .next/standalone/.next
+          cp -r .next/static .next/standalone/.next/static
+
+      - name: 6. Déploiement vers Hostinger via SSH (Rsync)
+        uses: burnett01/rsync-deployments@7.0.1
+        with:
+          switches: -avzr --delete --exclude='.env'
+          path: .next/standalone/
+          remote_path: ${{ secrets.HOSTINGER_APP_PATH }}
+          remote_host: ${{ secrets.HOSTINGER_SSH_HOST }}
+          remote_port: ${{ secrets.HOSTINGER_SSH_PORT }}
+          remote_user: ${{ secrets.HOSTINGER_SSH_USER }}
+          remote_key: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+
+      - name: 7. Redémarrage du serveur Node.js (Phusion Passenger / LiteSpeed)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HOSTINGER_SSH_HOST }}
+          username: ${{ secrets.HOSTINGER_SSH_USER }}
+          key: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.HOSTINGER_SSH_PORT }}
+          script: |
+            cd ${{ secrets.HOSTINGER_APP_PATH }}
+            mkdir -p tmp
+            touch tmp/restart.txt
