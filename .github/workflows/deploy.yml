@@ -1,5 +1,5 @@
-# Version: v1.1.3
-name: Build and Deploy Next.js Server to Hostinger (v1.1.3)
+# Version: v1.2.0
+name: Build and Deploy Next.js Server to Hostinger (v1.2.0)
 
 on:
   push:
@@ -31,23 +31,14 @@ jobs:
 
       - name: 5. Vérification d'intégrité et assemblage du bundle Standalone
         run: |
-          # Contrôle strict : bloque immédiatement le pipeline si server.js n'a pas été généré
           if [ ! -f ".next/standalone/server.js" ]; then
             echo "ERREUR CRITIQUE : .next/standalone/server.js est introuvable."
-            echo "Vérifiez que output: 'standalone' est bien actif dans next.config.mjs sur la branche main."
             exit 1
           fi
-
-          # Copie du dossier public (s'il existe dans le dépôt)
           if [ -d "public" ]; then
             cp -r public .next/standalone/public
           fi
-
-          # Copie des assets statiques compilés (CSS, JS client)
           cp -r .next/static .next/standalone/.next/static
-
-          # Affiche le contenu final dans les logs GitHub Actions pour audit
-          ls -la .next/standalone/
 
       - name: 6. Configuration et validation de la clé SSH
         env:
@@ -62,7 +53,7 @@ jobs:
           ssh-keygen -y -f ~/.ssh/id_deploy > /dev/null
           ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
 
-      - name: 7. Synchronisation Rsync et redémarrage
+      - name: 7. Synchronisation Rsync et configuration LiteSpeed Node.js (.htaccess)
         env:
           SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
           SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
@@ -77,8 +68,29 @@ jobs:
             -e "ssh -i ~/.ssh/id_deploy -p $SSH_PORT -o StrictHostKeyChecking=yes" \
             .next/standalone/ "${SSH_USER}@${SSH_HOST}:${APP_PATH%/}/"
 
-          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
-            "mkdir -p ${APP_PATH%/}/tmp && touch ${APP_PATH%/}/tmp/restart.txt && ls -la ${APP_PATH%/}/"
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" << EOF
+            set -e
+            TARGET_DIR="${APP_PATH%/}"
+            cd "\$TARGET_DIR"
+
+            # Détection automatique du binaire Node.js installé sur le serveur Hostinger
+            NODE_BIN=\$(ls /opt/alt/alt-nodejs22/root/usr/bin/node /opt/alt/alt-nodejs20/root/usr/bin/node /usr/bin/node 2>/dev/null | head -n 1 || which node)
+            echo "Binaire Node.js détecté sur Hostinger : \$NODE_BIN"
+
+            # Génération du fichier .htaccess pour router LiteSpeed vers server.js
+            cat << HTACCESS > .htaccess
+          PassengerAppRoot "\$TARGET_DIR"
+          PassengerBaseURI "/"
+          PassengerNodejs "\$NODE_BIN"
+          PassengerAppType node
+          PassengerStartupFile server.js
+          PassengerAppEnv production
+          HTACCESS
+
+            chmod 644 .htaccess
+            mkdir -p tmp
+            touch tmp/restart.txt
+          EOF
 
       - name: 8. Nettoyage de la clé SSH
         if: always()
