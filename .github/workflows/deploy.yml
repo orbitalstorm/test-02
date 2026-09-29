@@ -1,5 +1,5 @@
-# Version: v1.1.2
-name: Build and Deploy Next.js Server to Hostinger (v1.1.2)
+# Version: v1.1.3
+name: Build and Deploy Next.js Server to Hostinger (v1.1.3)
 
 on:
   push:
@@ -29,11 +29,25 @@ jobs:
         env:
           NODE_ENV: production
 
-      - name: 5. Assemblage du bundle Standalone
+      - name: 5. Vérification d'intégrité et assemblage du bundle Standalone
         run: |
-          cp -r public .next/standalone/public || true
-          mkdir -p .next/standalone/.next
+          # Contrôle strict : bloque immédiatement le pipeline si server.js n'a pas été généré
+          if [ ! -f ".next/standalone/server.js" ]; then
+            echo "ERREUR CRITIQUE : .next/standalone/server.js est introuvable."
+            echo "Vérifiez que output: 'standalone' est bien actif dans next.config.mjs sur la branche main."
+            exit 1
+          fi
+
+          # Copie du dossier public (s'il existe dans le dépôt)
+          if [ -d "public" ]; then
+            cp -r public .next/standalone/public
+          fi
+
+          # Copie des assets statiques compilés (CSS, JS client)
           cp -r .next/static .next/standalone/.next/static
+
+          # Affiche le contenu final dans les logs GitHub Actions pour audit
+          ls -la .next/standalone/
 
       - name: 6. Configuration et validation de la clé SSH
         env:
@@ -48,15 +62,13 @@ jobs:
           ssh-keygen -y -f ~/.ssh/id_deploy > /dev/null
           ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
 
-      - name: 7. Synchronisation Rsync et normalisation des permissions LiteSpeed
+      - name: 7. Synchronisation Rsync et redémarrage
         env:
           SSH_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
           SSH_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
           SSH_USER: ${{ secrets.HOSTINGER_SSH_USER }}
           APP_PATH: ${{ secrets.HOSTINGER_APP_PATH }}
         run: |
-          # Exclut .htaccess, .env et tmp/ de la suppression
-          # Force les permissions 755 (dossiers) et 644 (fichiers) exigées par LiteSpeed
           rsync -avzr --delete \
             --chmod=Du=rwx,Dg=rx,Do=rx,Fu=rw,Fg=r,Fo=r \
             --exclude='.env' \
@@ -66,7 +78,7 @@ jobs:
             .next/standalone/ "${SSH_USER}@${SSH_HOST}:${APP_PATH%/}/"
 
           ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" "$SSH_USER@$SSH_HOST" \
-            "mkdir -p ${APP_PATH%/}/tmp && touch ${APP_PATH%/}/tmp/restart.txt"
+            "mkdir -p ${APP_PATH%/}/tmp && touch ${APP_PATH%/}/tmp/restart.txt && ls -la ${APP_PATH%/}/"
 
       - name: 8. Nettoyage de la clé SSH
         if: always()
